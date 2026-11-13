@@ -60,3 +60,4 @@ The images are cropped and compressed for recipe cards. They illustrate similar 
 | chocolate-pancakes | [Photo 12187015 on Pexels](https://www.pexels.com/photo/photo-of-a-stack-of-pancakes-near-chocolate-12187015/) |
 | pancake-bites | [Photo 17896268 on Pexels](https://www.pexels.com/photo/plate-of-mini-pancakes-with-jam-and-banana-slices-17896268/) |
 | baked-oats | [Photo 3599974 on Pexels](https://www.pexels.com/photo/souffles-in-the-oven-3599974/) |
+| Cheesy shredded chicken wraps | [Wrap Cut in Half on a Cutting Board](https://www.pexels.com/photo/wrap-cut-in-half-on-a-cutting-board-12123661/) by Kamila Bairam |
