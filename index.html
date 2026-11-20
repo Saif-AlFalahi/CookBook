@@ -508,9 +508,13 @@ function openHealthLog(recipe) {
   const dialog = $('#healthDialog');
   const wrap = (recipe.recipeId || recipe.id) === healthWrapId;
   const testedFilling = matchesTestedFilling(recipe);
+  const coffee = (recipe.recipeId || recipe.id) === 'almarai-chocolate-instant-coffee';
+  const coffeeMilkIds = ['almarai-uht-fat-free-milk', 'p10'];
+  const currentMilk = coffee ? recipe.ingredients.find(item => coffeeMilkIds.includes(item.productId)) : null;
   dialog.innerHTML = dialogHead('Log to Apple Health', 'healthDialog') + `
     <div class="dialog-body">
       <h2>${esc(recipe.title)}</h2>
+      ${coffee && currentMilk ? '<div class="field" style="margin:12px 0"><label for="healthCoffeeMilk">Milk used for this drink</label><select id="healthCoffeeMilk">'+coffeeMilkIds.map(id=>'<option value="'+id+'"'+(currentMilk.productId===id?' selected':'')+'>'+esc(getProduct(id)?.name||id)+'</option>').join('')+'</select><p class="sublabel">Select Almarai 0% or Marmum Protein before logging. Recalculates macros for this entry only, without changing your saved recipe.</p></div>' : ''}
       <label for="healthMode">Measure your portion</label>
       <select id="healthMode">
         ${wrap ? '<option value="wrap">One wrap by bread and filling weight</option>' : ''}
@@ -541,13 +545,20 @@ function openHealthLog(recipe) {
   $('#healthCancel').onclick = () => dialog.close();
   const mode = $('#healthMode'), amount = $('#healthAmount'), weight = $('#healthWeight');
   const bread = $('#healthBread'), launch = $('#healthOpen');
+  const milkChoice = $('#healthCoffeeMilk');
   function update() {
     const units = mode.value;
     $('#healthWeightField').hidden = units !== 'wrap' && units !== 'grams';
     $('#healthWeightLabel').textContent = units === 'wrap' ? 'Whole batch of filling (g), before bread' : 'Finished batch weight (g)';
     if (bread) $('#healthBreadField').hidden = units !== 'wrap';
     $('#healthAmountLabel').textContent = {servings:'Servings eaten', batch:'Fraction eaten', grams:'Portion eaten (g)', wrap:'Filling in this wrap (g)'}[units];
-    const portion = healthPortion(recipe, units, amount.valueAsNumber, weight.valueAsNumber, bread?.value);
+    let loggingRecipe = recipe;
+    if (milkChoice && currentMilk && coffeeMilkIds.includes(milkChoice.value)) {
+      loggingRecipe = {...recipe, ingredients:recipe.ingredients.map(item =>
+        item === currentMilk ? {...item, productId:milkChoice.value} : item
+      )};
+    }
+    const portion = healthPortion(loggingRecipe, units, amount.valueAsNumber, weight.valueAsNumber, bread?.value);
     launch.style.display = portion ? '' : 'none';
     if (portion) {
       launch.href = healthShortcutURL(portion);
@@ -564,6 +575,7 @@ function openHealthLog(recipe) {
   amount.oninput = update;
   weight.oninput = update;
   if (bread) bread.onchange = update;
+  if (milkChoice) milkChoice.onchange = update;
   update();
   dialog.showModal();
 }
