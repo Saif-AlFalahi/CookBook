@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#161815">
+<title>Food tier list · Little by Little</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#161815;color:#f7f5eb}
+*{box-sizing:border-box}
+body{margin:0}
+main{max-width:960px;margin:auto;padding:24px clamp(14px,4vw,42px) 64px}
+a{color:#c8cabc;text-decoration:none;font-size:.94rem}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:28px 0}
+h1,h2,p{margin:0}
+h1{font-size:clamp(2rem,6vw,4rem);letter-spacing:-.055em;line-height:1.05}
+button,input,textarea,select{font:inherit}
+button,.pick{cursor:pointer}
+button{border:0;color:inherit}
+.primary{background:#d7ed9c;color:#202615;border-radius:14px;padding:12px 18px;font-weight:750;min-height:48px}
+.plus{font-size:1.6rem;vertical-align:-2px;line-height:1}
+#board{display:grid;gap:10px}
+.row{display:grid;grid-template-columns:clamp(60px,11vw,94px) 1fr;min-height:88px;background:#22251f;border:1px solid #34382f;border-radius:16px;overflow:hidden}
+.rank{background:var(--tier);color:#20231e;display:grid;place-items:center;font-weight:850;font-size:2.25rem}
+.foods{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px}
+.empty{color:#a9afa2;font-size:.88rem}
+.card{width:100px;background:#33382e;text-align:left;border-radius:10px;padding:0;overflow:hidden}
+.card img{display:block;width:100%;height:74px;object-fit:cover}
+.card strong{display:block;padding:6px 8px;overflow-wrap:anywhere;font-size:.85rem}
+footer{margin-top:18px;color:#afb4a8;font-size:.86rem}
+dialog{background:#252820;color:inherit;border:1px solid #484d42;border-radius:20px;width:min(440px,94vw);max-height:90dvh;padding:22px}
+dialog::backdrop{background:#000b}
+form{display:grid;gap:14px}
+label{display:grid;gap:5px;font-weight:600}
+input,select,textarea{border:1px solid #606657;border-radius:10px;background:#191c17;color:inherit;padding:10px;width:100%;min-width:0}
+textarea{resize:vertical}
+.photo{width:100%;max-height:220px;object-fit:contain;background:#191c17;border-radius:10px}
+.picks,.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pick,.secondary{position:relative;padding:10px 12px;background:#393e32;border-radius:10px;font-weight:600}
+.pick input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.pick:focus-within,:focus-visible{outline:3px solid #d7ed9c;outline-offset:2px}
+.controls{justify-content:flex-end}
+#added,#status{font-size:.85rem;color:#d3d7c9}
+#error{color:#ffb8aa}
+[hidden],p:empty{display:none}
+@media(max-width:400px){.primary{padding:10px 12px}.row{min-height:72px}.foods{padding:8px}}
+</style>
+</head>
+<body><main>
+<nav><a href="../">‹ Recipe notebook</a></nav>
+<header><h1>Food tier list</h1><button id="add" class="primary" disabled><span class="plus" aria-hidden="true">＋</span> Add food</button></header>
+<div id="board"></div><p id="status" role="status"></p>
+<footer>Saved in this browser on this device.</footer>
+</main>
+<dialog id="editor"><form id="form">
+<h2 id="heading">Add food</h2>
+<img class="photo" id="preview" alt="Selected food" hidden>
+<div class="picks"><label class="pick">Take photo<input id="camera" type="file" accept="image/*" capture="environment"></label><label class="pick">Choose photo<input id="gallery" type="file" accept="image/*"></label></div>
+<label>Food name<input id="name" maxlength="100" required></label>
+<label>Tier<select id="tier" required><option value="">Choose a tier</option></select></label>
+<label>Description (optional)<textarea id="description" rows="2" maxlength="1000"></textarea></label>
+<p id="added"></p><p id="error" role="alert"></p>
+<div class="controls"><button id="cancel" type="button" class="secondary">Cancel</button><button id="save" class="primary">Save food</button></div>
+</form></dialog>
+<script>
+'use strict';
+const el = id => document.getElementById(id);
+const ranks = {S:'#f4a496',A:'#f1bb84',B:'#ebd990',C:'#bfd59e',D:'#98c4ca',F:'#b6add2'};
+const editor = el('editor');
+let db, selected, photo, previewUrl, busy = false, version = 0;
+const rows = new Map();
+for (const [tier,color] of Object.entries(ranks)) {
+  const row = document.createElement('section');
+  row.className = 'row';
+  row.setAttribute('aria-label',tier+' tier');
+  row.style.setProperty('--tier',color);
+  const label = document.createElement('h2');
+  label.className = 'rank';
+  label.textContent = tier;
+  const foods = document.createElement('div');
+  foods.className = 'foods';
+  row.append(label,foods);
+  el('board').append(row);
+  rows.set(tier,foods);
+  el('tier').add(new Option(tier === 'S' ? 'S · Absolute best' : tier,tier));
+}
+let cardUrls = [];
+function render(items) {
+  cardUrls.forEach(url => URL.revokeObjectURL(url));
+  cardUrls = [];
+  rows.forEach(row => row.replaceChildren());
+  for (const item of items.sort((a,b) => b.createdAt-a.createdAt)) {
+    const card = document.createElement('button');
+    card.className = 'card';
+    const image = document.createElement('img');
+    image.alt = '';
+    image.loading = 'lazy';
+    image.src = URL.createObjectURL(item.photo);
+    cardUrls.push(image.src);
+    const name = document.createElement('strong');
+    name.textContent = item.name;
+    card.append(image,name);
+    card.onclick = () => openEditor(item);
+    rows.get(item.tier).append(card);
+  }
+  for (const row of rows.values()) if (!row.childElementCount) {
+    const hint = document.createElement('span');
+    hint.className = 'empty';
+    hint.textContent = 'No foods yet';
+    row.append(hint);
+  }
+}
+function refresh() {
+  const request = db.transaction('foods').objectStore('foods').getAll();
+  request.onsuccess = () => {render(request.result); el('add').disabled = false;};
+  request.onerror = () => {el('status').textContent = 'Could not read saved foods. Reload to try again.';};
+}
+function init() {
+  const request = indexedDB.open('little-by-little-food-tierlist',1);
+  request.onupgradeneeded = () => request.result.createObjectStore('foods',{keyPath:'id',autoIncrement:true});
+  request.onsuccess = () => {db = request.result; refresh();};
+  request.onerror = () => {el('status').textContent = 'Browser storage is unavailable. Allow storage and reload to save foods.';};
+}
+function showPhoto(blob) {
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = blob ? URL.createObjectURL(blob) : '';
+  el('preview').hidden = !blob;
+  if (blob) el('preview').src = previewUrl;
+  else el('preview').removeAttribute('src');
+}
+function openEditor(item) {
+  selected = item;
+  photo = item?.photo;
+  version++;
+  el('form').reset();
+  el('heading').textContent = item ? 'Edit food' : 'Add food';
+  el('name').value = item?.name || '';
+  el('description').value = item?.description || '';
+  el('tier').value = item?.tier || '';
+  el('added').textContent = item ? 'Added '+new Date(item.createdAt).toLocaleString() : '';
+  el('error').textContent = '';
+  el('save').disabled = false;
+  showPhoto(photo);
+  editor.showModal();
+}
+async function preparePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const scale = Math.min(1,1200/Math.max(img.width,img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1,Math.round(img.width*scale));
+    canvas.height = Math.max(1,Math.round(img.height*scale));
+    canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+    return await new Promise((resolve,reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(), 'image/jpeg',0.85));
+  } finally { URL.revokeObjectURL(url); }
+}
+async function pick(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const token = ++version;
+  el('save').disabled = true;
+  el('error').textContent = '';
+  try {
+    const resized = await preparePhoto(file);
+    if (token === version) {photo = resized; showPhoto(photo);}
+  } catch {
+    if (token === version) el('error').textContent = 'This photo could not be opened. Choose a JPEG or PNG.';
+  } finally {if (token === version) el('save').disabled = false;}
+}
+el('gallery').onchange = el('camera').onchange = pick;
+el('add').onclick = () => openEditor(null);
+el('cancel').onclick = () => editor.close();
+editor.onclose = () => {version++; showPhoto(null);};
+el('form').onsubmit = event => {
+  event.preventDefault();
+  if (busy || el('save').disabled) return;
+  const name = el('name').value.trim();
+  if (!name || !photo) {el('error').textContent = 'Add a food name and photo to save.'; return;}
+  const item = {name,photo,tier:el('tier').value,description:el('description').value.trim(),createdAt:selected?.createdAt ?? Date.now()};
+  if (selected) item.id = selected.id;
+  busy = true;
+  el('save').disabled = true;
+  el('cancel').disabled = true;
+  const txn = db.transaction('foods','readwrite');
+  txn.objectStore('foods').put(item);
+  txn.oncomplete = () => {busy = false; el('cancel').disabled = false; editor.close(); refresh();};
+  txn.onabort = () => {busy = false; el('cancel').disabled = false; el('save').disabled = false; el('error').textContent = 'Could not save. Check available storage and try again.';};
+};
+editor.oncancel = event => {if (busy) event.preventDefault();};
+try {init();} catch {el('status').textContent = 'Allow browser storage and reload to use the tier list.';}
+</script></body></html>
