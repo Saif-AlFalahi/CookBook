@@ -512,13 +512,37 @@ function renderPane(){const p=$('#recipePane');if(recipeTab==='ingredients'){p.i
 function renderIngredientRows(){let last='';$('#ingredientRows').innerHTML=draft.ingredients.map((i,index)=>{const p=getProduct(i.productId);const group=i.group&&last!==i.group?'<div class="group-label">'+esc(i.group)+'</div>':'';last=i.group;return group+'<div class="ingredient"><button class="product-pick" data-pick="'+index+'">'+esc(p?.name||'Choose product')+'<small>'+(complete(p)?p.status==='verified'?'Label confirmed':'Estimate, verify label':'Nutrition missing')+' · Tap to swap</small></button><input data-amount="'+index+'" aria-label="Amount of '+esc(p?.name)+'" type="number" min="0" step="any" value="'+i.amount+'"><span class="unit">'+esc(p?.unit||'g')+'</span><button class="icon-btn" data-remove="'+index+'" aria-label="Remove ingredient">'+icon('close')+'</button></div>';}).join('');$('#ingredientRows').querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>openPicker(Number(b.dataset.pick)));$('#ingredientRows').querySelectorAll('[data-amount]').forEach(e=>e.oninput=()=>{draft.ingredients[Number(e.dataset.amount)].amount=e.value===''?NaN:Number(e.value);renderNutrition();});$('#ingredientRows').querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{draft.ingredients.splice(Number(b.dataset.remove),1);renderIngredientRows();renderNutrition();});}
 function saveRecipe(){if(!draft.title.trim()||!Number.isFinite(draft.servings)||draft.servings<=0||draft.ingredients.some(i=>!Number.isFinite(i.amount)||i.amount<0)||draft.yieldGrams!=null&&(!Number.isFinite(draft.yieldGrams)||draft.yieldGrams<=0)){toast('Check the title, servings, quantities and finished weight.');return;}const index=db.recipes.findIndex(r=>r.id===draft.id);if(index>=0){const baseline=clone(db.recipes[index]);const candidate=clone(draft);delete baseline.history;delete candidate.history;if(JSON.stringify(baseline)===JSON.stringify(candidate)){toast('Nothing changed. Your saved recipe is already up to date.');return;}}if(index>=0){const old=clone(db.recipes[index]),history=old.history;delete old.history;draft.history=[...history,{at:new Date().toISOString(),note:old.changeNote||'Starting recipe',snapshot:old,macros:calc(old)}];}draft.updatedAt=new Date().toISOString();if(index>=0)db.recipes[index]=clone(draft);else db.recipes.unshift(clone(draft));const saved=persist();$('#recipeDialog').close();render();toast(saved?'Recipe version saved.':'Export a backup to keep your changes.');}
 let pickerRecipe;
-function openPicker(index, recipe=draft){pickIndex=index;pickerRecipe=recipe;const d=$('#pickerDialog');d.innerHTML=dialogHead(index<0?'Add an ingredient':'Choose a product','pickerDialog')+'<div class="dialog-body">'+(index>=0?'<div class="warning">'+(recipe === cookingBatch ? 'Changing between g and ml resets the amount to zero. Enter the amount you used.' : 'Swapping keeps the number entered. Check the quantity when switching between g and ml.')+'</div><button class="btn" id="editCurrent">Edit current product label</button>':'')+'<div class="toolbar" style="margin-top:16px"><div class="searchbox">'+icon('search')+'<input id="pickerSearch" aria-label="Find a product" placeholder="Search products…"></div><button class="btn primary" id="pickerNew">New</button></div><div id="pickerList"></div></div>';wireClose(d);$('#pickerSearch').oninput=()=>renderPicker();$('#pickerNew').onclick=()=>openProduct(null,true);if($('#editCurrent'))$('#editCurrent').onclick=()=>openProduct(pickerRecipe.ingredients[pickIndex].productId);renderPicker();d.showModal();}
+function ingredientPlacementOptions(ingredients) {
+  if (!ingredients.length) return '';
+  const sections = [];
+  ingredients.forEach((item, index) => {
+    const group = item.group || '';
+    let section = sections[sections.length - 1];
+    if (!section || section.group !== group) {
+      section = {group, options: ['<option value="before-' + index + '">First in section</option>']};
+      sections.push(section);
+    }
+    const name = getProduct(item.productId)?.name || 'Ingredient ' + (index + 1);
+    section.options.push('<option value="after-' + index + '"' + (index === ingredients.length - 1 ? ' selected' : '') + '>After ' + esc(name) + '</option>');
+  });
+  return '<label for="ingredientPlacement">Add ingredient to</label><select id="ingredientPlacement">' +
+    sections.map(section => '<optgroup label="' + esc(section.group || 'Ingredients') + '">' + section.options.join('') + '</optgroup>').join('') + '</select>';
+}
+function insertAtPlacement(ingredients, item, placement) {
+  if (!ingredients.length) { ingredients.push(item); return; }
+  const [side, rawIndex] = placement.split('-');
+  const anchor = Number(rawIndex);
+  item.group = ingredients[anchor].group || '';
+  ingredients.splice(anchor + (side === 'after' ? 1 : 0), 0, item);
+}
+function openPicker(index, recipe=draft){pickIndex=index;pickerRecipe=recipe;const d=$('#pickerDialog');d.innerHTML=dialogHead(index<0?'Add an ingredient':'Choose a product','pickerDialog')+'<div class="dialog-body">'+(index<0?ingredientPlacementOptions(recipe.ingredients):'')+(index>=0?'<div class="warning">'+(recipe === cookingBatch ? 'Changing between g and ml resets the amount to zero. Enter the amount you used.' : 'Swapping keeps the number entered. Check the quantity when switching between g and ml.')+'</div><button class="btn" id="editCurrent">Edit current product label</button>':'')+'<div class="toolbar" style="margin-top:16px"><div class="searchbox">'+icon('search')+'<input id="pickerSearch" aria-label="Find a product" placeholder="Search products…"></div><button class="btn primary" id="pickerNew">New</button></div><div id="pickerList"></div></div>';wireClose(d);$('#pickerSearch').oninput=()=>renderPicker();$('#pickerNew').onclick=()=>openProduct(null,true);if($('#editCurrent'))$('#editCurrent').onclick=()=>openProduct(pickerRecipe.ingredients[pickIndex].productId);renderPicker();d.showModal();}
 function renderPicker(){const q=$('#pickerSearch')?.value.toLowerCase()||'';const ps=db.products.filter(p=>p.name.toLowerCase().includes(q)).sort((a,b)=>Number(complete(b))-Number(complete(a))||a.name.localeCompare(b.name));$('#pickerList').innerHTML=ps.slice(0,100).map(p=>'<button class="product-row" data-select="'+esc(p.id)+'"><span><strong>'+esc(p.name)+'</strong><small>'+p.unit+' · '+(complete(p)?fmt(p.kcal)+' kcal per '+p.basis+' '+p.unit:'Needs nutrition label')+'</small></span>'+icon('plus')+'</button>').join('')||'<p class="muted small">No matches. Create a new product.</p>';$('#pickerList').querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>selectIngredient(b.dataset.select));}
 function selectIngredient(id) {
   const ingredients = pickerRecipe.ingredients;
   const isCooking = pickerRecipe === cookingBatch;
   if (pickIndex < 0) {
-    ingredients.push({productId:id, amount:isCooking ? 0 : 100, group:'', plannedAmount:null, plannedUnit:null, checked:false});
+    const item = {productId:id, amount:isCooking ? 0 : 100, group:'', plannedAmount:null, plannedUnit:null, checked:false};
+    insertAtPlacement(ingredients, item, $('#ingredientPlacement')?.value || '');
   } else {
     const ingredient = ingredients[pickIndex];
     const oldUnit = getProduct(ingredient.productId)?.unit;
