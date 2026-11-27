@@ -398,7 +398,7 @@ function addNotebookDefaults(notebook) {
 try{const saved=localStorage.getItem(KEY);if(saved){const parsed=JSON.parse(saved);if(!validDB(parsed)||!validCooking(parsed))throw Error('Invalid saved data');addNotebookDefaults(parsed);db=parsed;}}catch(e){$('#storageAlert').hidden=false;$('#storageAlert').textContent='Saved data could not be loaded. Export a backup before closing. '+e.message;}
 const nutrients=['kcal','protein','carbs','fat'];
 function validDB(d){return d&&d.schema===1&&Array.isArray(d.recipes)&&Array.isArray(d.products)&&d.recipes.length<=10000&&d.products.length<=10000&&new Set(d.products.map(p=>p.id)).size===d.products.length&&new Set(d.recipes.map(r=>r.id)).size===d.recipes.length&&d.products.every(p=>typeof p.id==='string'&&typeof p.name==='string'&&['g','ml'].includes(p.unit)&&Number.isFinite(p.basis)&&p.basis>0&&['kcal','protein','carbs','fat','price','pack'].every(k=>p[k]==null||(Number.isFinite(p[k])&&p[k]>=0)))&&d.recipes.every(r=>typeof r.id==='string'&&typeof r.title==='string'&&Object.hasOwn(recipeCategories,r.category)&&Number.isFinite(r.servings)&&r.servings>0&&typeof r.instructions==='string'&&typeof r.notes==='string'&&Array.isArray(r.history)&&r.history.every(h=>h&&typeof h.at==='string'&&h.snapshot&&typeof h.snapshot.title==='string'&&typeof h.snapshot.instructions==='string'&&typeof h.snapshot.notes==='string'&&Number.isFinite(h.snapshot.servings)&&h.snapshot.servings>0&&Array.isArray(h.snapshot.ingredients)&&h.snapshot.ingredients.every(i=>Number.isFinite(i.amount)&&i.amount>=0&&d.products.some(p=>p.id===i.productId))&&(!h.macros||(Array.isArray(h.macros.missing)&&['kcal','protein','carbs','fat'].every(k=>Number.isFinite(h.macros[k])))))&&Array.isArray(r.ingredients)&&r.ingredients.every(i=>Number.isFinite(i.amount)&&i.amount>=0&&d.products.some(p=>p.id===i.productId)));}
-function persist(){try{localStorage.setItem(KEY,JSON.stringify(db));return true;}catch(e){$('#storageAlert').hidden=false;$('#storageAlert').textContent='Changes are in memory only. Browser storage is unavailable or full. Export a backup now.';return false;}}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(db));queueCloudBackup();return true;}catch(e){$('#storageAlert').hidden=false;$('#storageAlert').textContent='Changes are in memory only. Browser storage is unavailable or full. Export a backup now.';return false;}}
 function toast(s){$('#toast').textContent=s;$('#toast').style.display='block';clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').style.display='none',3200);}
 function getProduct(id){return db.products.find(p=>p.id===id);}
 function complete(p){return p&&p.basis>0&&nutrients.every(n=>typeof p[n]==='number'&&Number.isFinite(p[n]));}
@@ -641,6 +641,44 @@ function ask(title,message){return new Promise(resolve=>{const d=$('#confirmDial
 function download(data,name,type){const url=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 function openPDF(key,page){const book=SEED.books[key];if(!book)return toast('Original PDF unavailable.');const bytes=Uint8Array.from(atob(book.data),c=>c.charCodeAt(0));const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));const a=document.createElement('a');a.href=url+'#page='+page;a.target='_blank';a.rel='noopener';a.click();setTimeout(()=>URL.revokeObjectURL(url),120000);}
 let backupSession = null;
+let autoBackupTimer, backupDirty = false, backupUploading = false;
+function backupStatus(text) {
+  const status = document.getElementById('syncStatus');
+  if (status) status.textContent = text;
+  const button = document.getElementById('settingsBtn');
+  if (button) button.title = text;
+}
+function queueCloudBackup() {
+  if (!backupSession?.auto) return;
+  backupDirty = true;
+  clearTimeout(autoBackupTimer);
+  autoBackupTimer = setTimeout(flushCloudBackup,1500);
+}
+async function flushCloudBackup() {
+  const session = backupSession;
+  if (!session?.auto || backupUploading || !backupDirty) return;
+  backupUploading = true;
+  backupDirty = false;
+  try {
+    await uploadNotebook(session);
+    backupStatus('Cloud backup saved at '+new Date().toLocaleTimeString());
+  } catch(error) {
+    session.auto=false;
+    const toggle=document.getElementById('autoBackup');
+    if(toggle)toggle.checked=false;
+    document.getElementById('storageAlert').hidden=false;
+    document.getElementById('storageAlert').textContent='Automatic cloud backup paused. '+error.message;
+    backupStatus('Cloud backup paused. Local edits are still available.');
+  } finally {
+    backupUploading=false;
+    if(backupDirty && backupSession?.auto)queueCloudBackup();
+  }
+}
+async function uploadNotebook(session) {
+  const result=await githubJSON(session.path,session.token,{method:'PUT',body:JSON.stringify({message:'Back up recipe notebook',content:encodeBackup({...db,exportedAt:new Date().toISOString()}),...(session.sha?{sha:session.sha}:{})})});
+  session.sha=result.content.sha;
+}
+
 async function githubJSON(path, token, options={}) {
   const response = await fetch('https://api.github.com/repos/'+path,{
     ...options, cache:'no-store',redirect:'error',
@@ -664,8 +702,9 @@ function wireBackup() {
   const message = $('#syncStatus'), connect = $('#connectBackup'), upload = $('#uploadBackup'), restore = $('#restoreBackup');
   const field = $('#backupRepo'), password = $('#backupToken');
   field.value = backupSession?.repo || localStorage.getItem(KEY+':backup-repo') || '';
-  function buttons() {upload.hidden = !backupSession; restore.hidden = !backupSession?.sha; connect.disabled = false;}
+  function buttons() {upload.hidden = !backupSession; restore.hidden = !backupSession?.sha; connect.disabled = false;$('#autoBackup').disabled=!backupSession?.ready;$('#autoBackup').checked=!!backupSession?.auto;}
   function reset() {backupSession=null; buttons();message.textContent='';}
+  $('#autoBackup').onchange = event => {if(backupSession?.ready){backupSession.auto=event.target.checked;if(backupSession.auto)queueCloudBackup();}};
   field.oninput = password.oninput = reset;
   buttons();
   if (backupSession) message.textContent='Connected to '+backupSession.repo;
@@ -688,8 +727,7 @@ function wireBackup() {
   upload.onclick=()=>run(async()=>{
     const session=backupSession;
     if(session.sha && !await ask('Save this device to GitHub?', 'This notebook becomes the latest backup. Earlier backups remain in the private file history.')) return;
-    const result=await githubJSON(session.path,session.token,{method:'PUT',body:JSON.stringify({message:'Back up recipe notebook',content:encodeBackup({...db,exportedAt:new Date().toISOString()}),...(session.sha?{sha:session.sha}:{})})});
-    session.sha=result.content.sha;message.textContent='Backed up to '+session.repo+' at '+new Date().toLocaleTimeString();
+    await uploadNotebook(session);session.ready=true;message.textContent='Backed up to '+session.repo+' at '+new Date().toLocaleTimeString();
   });
   restore.onclick=()=>run(async()=>{
     const session=backupSession;
@@ -700,10 +738,10 @@ function wireBackup() {
     download(JSON.stringify(db),'cookbook-before-restore.json','application/json');
     addNotebookDefaults(incoming);const previous=db;db=incoming;
     if(!persist()){db=previous;throw Error('Restore failed. This browser could not store the notebook.');}
-    session.sha=file.sha;render();message.textContent='Cloud backup restored.';
+    session.sha=file.sha;session.ready=true;render();message.textContent='Cloud backup restored.';
   });
 }
-function showSettings(){const d=$('#settingsDialog');d.innerHTML=dialogHead('Your notebook','settingsDialog')+'<div class="dialog-body"><h2>Backups and settings</h2><div class="settings-card"><h3>Private GitHub backup</h3><p>Save recipes, versions, pantry and cooking batches to your own private repository. On another device, connect and choose Restore. Backups are manual.</p><p><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">Create a private repository</a> with a README. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">Create a fine-grained token</a> for only that repository with Contents read and write. The token stays in memory for this tab.</p><label for="backupRepo">Private repository</label><input id="backupRepo" placeholder="owner/cookbook-backups" autocomplete="off"><label for="backupToken">Fine-grained access token</label><input id="backupToken" type="password" autocomplete="off"><div class="actions" style="flex-wrap:wrap;margin-top:10px"><button class="btn" id="connectBackup">Connect</button><button class="btn primary" id="uploadBackup" hidden>Save cloud backup</button><button class="btn" id="restoreBackup" hidden>Restore cloud backup</button></div><p id="syncStatus" role="status"></p></div><div class="settings-card"><h3>Backup file</h3><p>Download a complete notebook backup to Files, iCloud Drive or another folder. Import it to restore your notebook.</p><div class="actions"><button class="btn" id="shareBackup" hidden>Share backup file</button><button class="btn primary" id="exportData">'+icon('download')+'Export backup</button><button class="btn" id="importData">Import backup</button></div></div><div class="settings-card"><h3>Your latest app, in one file</h3><p>Download an index.html with your current recipes, products and favorites built in. Anyone who can access that hosted file can read the included recipes and notes. Upload it to your GitHub Pages repository. Browser edits made after uploading still need a backup.</p><button class="btn" id="exportSite">Download updated index.html</button></div><div class="settings-card"><h3>The original cookbooks</h3><p>Four original cookbooks. Earlier oats are kept as original versions. Cold desserts sit with Creami. Recipe estimates are preserved separately from your label-based calculations.</p>'+Object.entries(SEED.books).map(([k,v])=>'<button class="link" data-book="'+k+'">'+esc({lunch:'Work lunch, Arabic',oats:'Lighter layered oats',bakes:'Protein bakebook',kitchen:'Creamy Protein Kitchen'}[k])+'</button><br>').join('')+'</div><div class="settings-card"><h3>Macro calculations</h3><p>Each ingredient contributes its quantity ÷ label basis × label nutrition. Servings divide the whole batch. Cooked weight only changes per-100-g values, it does not remove calories. Account for oils, marinades, mix-ins and any discarded sauce yourself.</p><p>Confirm brand, flavour and raw or cooked state. Unfilled nutrition is never counted as zero. Book estimates do not update when a recipe changes.</p></div></div>';wireClose(d);wireBackup();
+function showSettings(){const d=$('#settingsDialog');d.innerHTML=dialogHead('Your notebook','settingsDialog')+'<div class="dialog-body"><h2>Backups and settings</h2><div class="settings-card"><h3>Private GitHub backup</h3><p>Save recipes, versions, pantry and cooking batches to your own private repository. On another device, connect and choose Restore. After the first save or restore, you can turn on automatic backups for this tab.</p><p><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">Create a private repository</a> with a README. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">Create a fine-grained token</a> for only that repository with Contents read and write. The token stays in memory for this tab.</p><label for="backupRepo">Private repository</label><input id="backupRepo" placeholder="owner/cookbook-backups" autocomplete="off"><label for="backupToken">Fine-grained access token</label><input id="backupToken" type="password" autocomplete="off"><div class="actions" style="flex-wrap:wrap;margin-top:10px"><button class="btn" id="connectBackup">Connect</button><button class="btn primary" id="uploadBackup" hidden>Save cloud backup</button><button class="btn" id="restoreBackup" hidden>Restore cloud backup</button></div><label class="switch"><input id="autoBackup" type="checkbox">Automatically back up saved edits while connected</label><p id="syncStatus" role="status"></p></div><div class="settings-card"><h3>Backup file</h3><p>Download a complete notebook backup to Files, iCloud Drive or another folder. Import it to restore your notebook.</p><div class="actions"><button class="btn" id="shareBackup" hidden>Share backup file</button><button class="btn primary" id="exportData">'+icon('download')+'Export backup</button><button class="btn" id="importData">Import backup</button></div></div><div class="settings-card"><h3>Your latest app, in one file</h3><p>Download an index.html with your current recipes, products and favorites built in. Anyone who can access that hosted file can read the included recipes and notes. Upload it to your GitHub Pages repository. Browser edits made after uploading still need a backup.</p><button class="btn" id="exportSite">Download updated index.html</button></div><div class="settings-card"><h3>The original cookbooks</h3><p>Four original cookbooks. Earlier oats are kept as original versions. Cold desserts sit with Creami. Recipe estimates are preserved separately from your label-based calculations.</p>'+Object.entries(SEED.books).map(([k,v])=>'<button class="link" data-book="'+k+'">'+esc({lunch:'Work lunch, Arabic',oats:'Lighter layered oats',bakes:'Protein bakebook',kitchen:'Creamy Protein Kitchen'}[k])+'</button><br>').join('')+'</div><div class="settings-card"><h3>Macro calculations</h3><p>Each ingredient contributes its quantity ÷ label basis × label nutrition. Servings divide the whole batch. Cooked weight only changes per-100-g values, it does not remove calories. Account for oils, marinades, mix-ins and any discarded sauce yourself.</p><p>Confirm brand, flavour and raw or cooked state. Unfilled nutrition is never counted as zero. Book estimates do not update when a recipe changes.</p></div></div>';wireClose(d);wireBackup();
 const shareButton=$('#shareBackup');
 if (typeof navigator.canShare==='function' && navigator.canShare({files:[new File(['{}'],'cookbook.json',{type:'application/json'})]})) {
   shareButton.hidden=false;
