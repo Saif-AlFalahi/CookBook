@@ -50,7 +50,7 @@ textarea{resize:vertical}
 <nav><a href="../">‹ Recipe notebook</a></nav>
 <header><h1>Food tier list</h1><button id="add" class="primary" disabled><span class="plus" aria-hidden="true">＋</span> Add food</button></header>
 <div id="board"></div><p id="status" role="status"></p>
-<footer>Saved in this browser on this device.</footer>
+<footer><details><summary>Back up photos and rankings</summary><p>Export a file to keep your board or import it on another device.</p><div class="picks"><button id="backupFoods" class="secondary">Export board</button><label class="pick">Import board<input id="restoreFoods" type="file" accept=".json,application/json"></label></div></details></footer>
 </main>
 <dialog id="editor"><form id="form">
 <h2 id="heading">Add food</h2>
@@ -190,5 +190,43 @@ el('form').onsubmit = event => {
   txn.onabort = () => {busy = false; el('cancel').disabled = false; el('save').disabled = false; el('error').textContent = 'Could not save. Check available storage and try again.';};
 };
 editor.oncancel = event => {if (busy) event.preventDefault();};
+function readAllFoods() {
+  return new Promise((resolve,reject)=>{
+    const request=db.transaction('foods').objectStore('foods').getAll();
+    request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error);
+  });
+}
+function photoData(blob) {
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);reader.readAsDataURL(blob);
+  });
+}
+async function exportFoods() {
+  const foods=await readAllFoods();
+  const bytes=JSON.stringify({format:'food-tier-list-1',foods:await Promise.all(foods.map(async food=>({...food,photo:await photoData(food.photo)})))});
+  const url=URL.createObjectURL(new Blob([bytes],{type:'application/json'}));
+  const link=document.createElement('a');link.href=url;link.download='food-tier-list-'+new Date().toISOString().slice(0,10)+'.json';link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+}
+el('backupFoods').onclick=()=>exportFoods().catch(()=>el('status').textContent='Could not export the board.');
+el('restoreFoods').onchange=async event=>{
+  const file=event.target.files[0];event.target.value='';if(!file)return;
+  try {
+    const data=JSON.parse(await file.text());
+    if(data.format!=='food-tier-list-1'||!Array.isArray(data.foods))throw Error();
+    const foods=data.foods.map(item=>{
+      if(!item || !Number.isFinite(item.createdAt)||typeof item.name!=='string'||typeof item.description!=='string'||!Object.hasOwn(ranks,item.tier)||typeof item.photo!=='string'||!item.photo.startsWith('data:image/jpeg;base64,'))throw Error();
+      return {name:item.name,tier:item.tier,description:item.description,createdAt:item.createdAt,photo:new Blob([Uint8Array.from(atob(item.photo.split(',')[1]),c=>c.charCodeAt(0))],{type:'image/jpeg'})};
+    });
+    const txn=db.transaction('foods','readwrite'), store=txn.objectStore('foods'), request=store.getAll();
+    request.onsuccess=()=>{
+      const key=item=>JSON.stringify([item.createdAt,item.name]);
+      const known=new Set(request.result.map(key));
+      for(const item of foods) if(!known.has(key(item))){store.add(item);known.add(key(item));}
+    };
+    txn.oncomplete=()=>{refresh();el('status').textContent='Backup imported. Existing foods were kept.';};
+    txn.onabort=()=>el('status').textContent='Could not store the photos. Check available space.';
+  }catch{el('status').textContent='Choose a valid food tier list backup.';}
+};
 try {init();} catch {el('status').textContent = 'Allow browser storage and reload to use the tier list.';}
 </script></body></html>
